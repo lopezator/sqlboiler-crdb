@@ -373,10 +373,8 @@ func (d *CockroachDBDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.
 	var fkeys []drivers.ForeignKey
 
 	query := `SELECT
-    DISTINCT
     pgcon.conname,
-    pgc.relname AS source_table,
-    kcu.column_name AS source_column,
+    pgasrc.attname AS source_column,
     dstlookupname.relname AS dest_table,
     pgadst.attname AS dest_column
 FROM
@@ -389,22 +387,20 @@ FROM
         AND pgc.oid = pgcon.conrelid
     INNER JOIN pg_class AS dstlookupname
     ON pgcon.confrelid = dstlookupname.oid
-    LEFT JOIN information_schema.key_column_usage AS kcu
+    CROSS JOIN LATERAL generate_subscripts(pgcon.conkey, 1) AS idx (n)
+    INNER JOIN pg_attribute AS pgasrc
     ON
-        pgcon.conname = kcu.constraint_name
-        AND pgc.relname = kcu.table_name
-    LEFT JOIN information_schema.key_column_usage AS kcudst
-    ON
-        pgcon.conname = kcu.constraint_name
-        AND dstlookupname.relname = kcu.table_name
+        pgc.oid = pgasrc.attrelid
+        AND pgasrc.attnum = pgcon.conkey[idx.n]
     INNER JOIN pg_attribute AS pgadst
     ON
         pgcon.confrelid = pgadst.attrelid
-        AND pgadst.attnum = ANY pgcon.confkey
+        AND pgadst.attnum = pgcon.confkey[idx.n]
 WHERE
     pgn.nspname = $2
     AND pgc.relname = $1
     AND pgcon.contype = 'f'
+    AND idx.n = 1
 ORDER BY
     pgcon.conname DESC;`
 
@@ -416,10 +412,9 @@ ORDER BY
 
 	for rows.Next() {
 		var fkey drivers.ForeignKey
-		var sourceTable string
 
 		fkey.Table = tableName
-		err = rows.Scan(&fkey.Name, &sourceTable, &fkey.Column, &fkey.ForeignTable, &fkey.ForeignColumn)
+		err = rows.Scan(&fkey.Name, &fkey.Column, &fkey.ForeignTable, &fkey.ForeignColumn)
 		if err != nil {
 			return nil, err
 		}
